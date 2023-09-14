@@ -1,0 +1,132 @@
+@font-face {
+    font-family: Assistant;
+    src: url("ressources/Assistant.ttf");
+}
+
+@font-face {
+    font-family: Manrope;
+    src: url("ressources/Manrope.ttf");
+}
+
+*{
+    /* https://github.com/enkia/tokyo-night-vscode-theme */
+    --red       : #f7768e;
+    --orange    : #ff9e64;
+    --yellow    : #e0af68; 
+    --green     : #9ece6a;
+    --greenblue : #73daca;
+    --lighcyan  : #b4f9f8;
+    --cyan      : #2ac3de;
+    --blue      : #7dcfff;
+    --darkblue  : #7aa2f7; 
+    --magenta   : #bb9af7;
+    --pinkwhite : #c0caf5; 
+    --greywhite : #a9b1d6;
+    --grey      : #9aa5ce; 
+    --white     : #cfc9c2; 
+    --dark      : #565f89;
+    --darker    : #414868;
+    --black     : #24283b; 
+    --darkblack : #1a1b26;
+
+    margin : 0;
+    padding: 0;
+    font-family: "Assistant", Arial, Helvetica, sans-serif;
+}
+
+html{
+    width  : 100vw;
+    height : 100vh;
+}
+
+body{
+    background-color: var(--darkblack);
+    margin:calc( max(0%, 15% - 75px) + 15px);
+}
+
+/****** Text ******/
+
+.subtitle{
+    color: var(--greenblue);
+    font-size:   20pt;
+    line-height: 20px;
+    margin-top:  15px;
+    margin-bottom: 5px;
+}
+
+p{
+    color: var(--white);
+}
+
+/****** Architecture ******/
+#main_content{
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#profile{
+    display: flex;
+    align-items: center;
+    margin: auto;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+#profile_pic{
+    border-radius: 100%;
+    width: 220px;
+    height:220px;
+}
+#profile_desc {
+    margin: 00px 20px 0px 20px;
+    max-width: 415px;
+    text-align: justify;
+}
+#profile_name{
+    color: var(--white);
+    font-size:   30pt;
+    font-family: "Manrope", Arial, Helvetica, sans-serif;
+}
+#profil_social{
+    display: flex;
+    width: 100%;
+    justify-content: space-evenly;
+    margin-top: 10px;
+}
+
+
+.project{
+    height: 180px;
+    width:  180px;
+    border: 1px solid var(--black);
+    background-color: var(--white);
+    position: relative;
+    margin: calc(0.9vw + 1px);
+    border: 1px solid var(--greywhite);
+    transition: transform 0.5s, box-shadow 0.5s;
+}
+.project:hover{
+    transform: scale(1.07);
+    box-shadow: 0px 0px 10px black;
+}
+
+.project img{
+    width:   100%;
+    height : 100%;
+}
+
+.project_legend{
+    position: absolute;
+    top:84%;
+    width:100%;
+    text-align: center;
+    color: var(--white);
+}
+
+
+/****** Various ******/
+hr{
+    border-color: var(--green-light);
+    margin-top :    5px;
+    margin-bottom : 5px;
+}

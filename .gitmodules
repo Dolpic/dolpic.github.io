@@ -1,0 +1,3 @@
+[submodule "projects/Fractals_WASM"]
+	path = projects/Fractals_WASM
+	url = https://github.com/Dolpic/Fractals_WASM
