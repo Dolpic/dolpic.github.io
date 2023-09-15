@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <link rel="stylesheet" type="text/css" href="../../style.css">
+        <title>Corentin Junod</title>
+        <style>
+            body{
+                margin-top: 2%;
+            }
+        </style>
+    </head>
+    <body>
+        <h1 class="main_title">Python Synthesizer</h1>
+        <p class="subtitle">Experimental real-time synth, with midi support</p>
+
+        <hr>
+        <p>
+            As a project with friends, we implemented a working synthesizer taking input from a MIDI source and converting it into a audio signal.<br>
+            The main challenges were to compute in real-time the audio stream in a high level language such a Python, which led to many surprises regarding optimizations.
+        </p>
+        <img style="width:100%;max-width:600px;display: flex;margin:auto" src="ressources/synth.png">
+        <p>
+            The key features are the following :
+            <ul>
+                <li>Simple UI, showing the signal produced in real-time</li>
+                <li>Inputs can be a real-time MIDI device, or a specified MIDI file to play</li>
+                <li>All the audio primitives (oscillators, filters, ADSR, etc) are divided into modules that serve as "build-block" for the audio pipeline</li>
+                <li>The whole audio pipeline is described in a single file (using the modules), such files can be loaded as plugins</li>
+                <li>Filters applied on MIDI notes are supported, such as arpeggiators</li>
+                <li>The temperament can be chosen from Equal, Pythagorean or Just</li>
+            </ul>
+        </p>
+    </body>
+</html>
