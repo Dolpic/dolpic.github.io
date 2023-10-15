@@ -7,3 +7,6 @@
 [submodule "projects/MonteCarlo"]
 	path = projects/MonteCarlo
 	url = https://github.com/Dolpic/MonteCarlo
+[submodule "projects/path_tracing"]
+	path = projects/path_tracing
+	url = https://github.com/Dolpic/path_tracing
