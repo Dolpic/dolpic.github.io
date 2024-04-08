@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <link rel="stylesheet" type="text/css" href="../../style.css">
+        <title>Occlusion for raster models</title>
+        <style>
+            p{
+                text-align: justify;
+            }
+            img{
+                padding:20px;
+                max-width: 40%;
+            }
+            ol, ul{
+                margin-left: 30px;
+                line-height: 20pt;
+                padding: 5px;
+            }
+            h2{
+                margin: 20px 0px 10px 0px;
+                text-align: center;
+            }
+            h3{
+                font-size: 20pt;
+                margin: 40px 0px 10px 0px;
+            }
+            h4{
+                margin: 20px 0px 5px 0px;
+            }
+            hr{
+                width:75%;
+                margin:auto;
+                margin-top: 45px;
+                margin-bottom: 20px;
+            }
+        </style>
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    </head>
+    <body>
+        <h1>DSM Occlusion</h1>
+        <p class="subtitle">Occlusion for raster models</p>
+        <hr>
+
+        <h2>Software, code & installation</h2>
+        <p>Compiled binaries, source code and setup instruction are on the <a href="https://github.com/Dolpic/DSM-Occlusion">project’s github page.</a></p>
+        <p>The remaining of this document is dedicated to implementation details.</p>
+        
+        <hr>
+        <h2>Implementation details and theoretical aspects</h2>
+
+
+        <h3>File input & output</h3>
+        <p>
+            All the IO is handled by the <a href="https://gdal.org/">GDAL library</a> which provides convenient abstractions to read raster in TIFF / GeoTIFF / COG so that this project’s code doesn’t have to implement these functions itself.
+            <br>
+            During startup, the programs copies the input file into the output file, so that all the output disk space is allocated. The output format is also copied from the input file and handled by the <a href="https://gdal.org/">GDAL library</a>.
+            <br>
+            File IO operations could be further optimized. They are mainly linked to the disk read / write speed and the <a href="https://gdal.org/">GDAL</a> implementation.
+        </p>
+
+
+        <h3>Application pipeline</h3>
+        <h4>General overview</h4>
+        <p>
+            The application splits the input file into tiles, so that the application can handle larger file than would fit in the machine memory. 
+            Furthermore, for the same number of pixels, processing many smaller tiles is faster than one large.
+            The gain varies depending on the graphic card used, hence the ability for the users to select their preferred size as a parameter.
+            <br>
+            The processing of one tile can be splitted into 4 steps :
+            <ol>
+                <li><b>Tile loading</b> : The time for a tile to be read from the file on disk into memory</li>
+                <li><b>Tile initialization</b> : Before performing ray-tracing on the data, an initialization step is performed on the CPU to create an acceleration structure significantly decreasing the tracing time.</li>
+                <li><b>Tile tracing</b> : The tile is transferred to the GPU where ray-tracing is performed. The result is then transferred back to the CPU.</li>
+                <li><b>Tile writing</b> : Finally, the results written in the output file in the disk</li>
+            </ol>
+            <i>
+                Note : The steps above are arbitrary, one may chose to split the computation time differently. 
+                For exemple, two steps can be added before and after the tracing, to take into account the time for the data to be transferred from the CPU to the GPU and from the GPU back to CPU respectively.
+                From experience however, data transfer time between CPU and GPU are mostly small compared to tracing time.
+            </i>
+        </p>
+
+
+        <h4>Speedup using pipelining</h4>
+        <img style="float:right"  src="ressources/images/piepline.svg">
+        <p>
+            As tiles are independent from each other (beside border effects discussed below), their computation can be pipelined so that each step defined above does not wait for the whole tile to be finished before processing the next tile.
+            This is illustrated by the figure on the right.
+            Implementing pipelining increases the code complexity because a mechanism must ensure that a step finishes before the next one can begin.
+            <br><br>
+            In the code, the class <i>Pipeline</i> creates one thread per step, and ensures synchronization between threads so that each operation starts when the previous is completed.<br>
+            As shown on the figure, the slower step dictates when each step may process the next tile. 
+            When a step finishes its work, it notifies the main thread and waits. Upon all steps completion, the main thread moves the data between child threads and wakes them up.
+            <br><br>
+            Implementing pipeline improved the whole computation time by around 30%. 
+            This is expected to heavily changes from one machine to another, as the bottleneck step dictates the progression pace.
+            <br>
+            Pipelining could be further improved by splitting the processing time into more steps. 
+            However, the bottlenecks are currently the initialization and tracing steps, which, besides data transfer, can not be further splitted.
+        </p>
+
+
+        <h4>Handling tile’s border effects</h4>
+        <p>
+            The previous section states that tiles are independent from each other. 
+            This is not entirely true : near a tile border, geometry located in another tile may influence the shadow.
+            By tiling the data, this would lead to geometry being ignore and seeable artefacts in the final result.
+            To avoid this issue, the algorithm takes a tile buffer parameter, which is an overlap between tiles. 
+            All tiles are loaded and processed with this overlap, it is finally ignored when saving the tile.
+            <br><br>
+            Empirical tests shown that having a buffer of 1/3 of the tile size prevents artefacts for pixels of 50cm.
+            This parameter is strongly linked to the pixel size, as smaller pixels requires larger overlap due to ???.
+            <br>
+            There is a tradeoff when choosing the tile size. 
+            On one hand larger tiles take more time to compute, increasing faster than quadratically.
+            On the other hand, the smaller the tile, the larger the required overlap so that tile’s border are not visible.
+            The sweet spot depends on the GPU used and can be chosen by the user using the <i>tile size</i> and <i>tile buffer</i> parameters.
+        </p>
+
+
+        <h3>Initialization : constructing a bounding volume hierarchy (BVH)</h3>
+        <img style="float:right"  src="ressources/images/BVH.svg">
+        <p>
+            Starting the path tracing algorithm on raw points would lead to inacceptable execution time, as the process would need to check for every point if any other point occludes it.
+            Fortunately, this execution time can be significantly reduced using a bounding volume hierarchy.
+            A BVH is a binary tree with leaves describing primitives (part of some geometry) and other nodes describing bounding boxes englobing their children.
+            With such a structure, computing the intersection between a ray and all the geometry boils down to a binary tree search. 
+            <br>
+            During the initialization process, the initial tile's data is converted to a BVH by the CPU. The BVH creation leverages the following simplifications compared to traditional BVHs :
+            <ul>
+                <li>
+                    <b>Only bounded boxes are stored</b> as the data points can be approximated by boxes. 
+                    Leaves are bounding boxes around one single data point (one pixel in the original data) and upon intersection with a leaf, the ray is considered to hit the point.
+                    Note that in any case an approximation needs to be made : for random rays to hit points in 3D space, these points needs to be made solid. 
+                    Approximating points by boxes allow all intersections to be between rays ans boxes, which both simplifies the code and is the fastest intersection to compute.
+                </li>
+                <li>
+                    <b>Nodes store the bounding box of their two children instead of their own. </b>
+                    During GPU execution, the bottleneck is the memory accesses to the main memory holding the BVH.
+                    To speed up computation, memory accesses are reduced as much as possible.
+                    Storing both children bounding boxes at each node prevents loading a whole child node from memory if there is no collision with it.
+                </li>
+            </ul>
+
+            As all the points are approximated by boxes, there is no need to implement advanced BVH heuristics such as splitting the nodes based on the primitives' surface area.
+        </p>
+
+        <hr>
+        <h3>GPU Path tracing</h3>
+        <p>
+            Once the BVH for a given tile is build, this tile can be processed by the GPU to produce its occlusion.
+            For each pixel in the input tile, the GPU launches the user-defined number of rays in randomized directions.
+        </p>
+        
+        <h4>Path tracing</h4>
+        <p>
+            To produce the result, the application uses path tracing, a ray-tracing algorithm based on the rendering equation.
+            At any given position and time, for every wavelength we have :
+            $$L_o(\omega_o)=L_e(\omega_o)+ \int_{\Omega}^{} f_r(\omega_i,\omega_o) \cdot L_i(\omega_i) \cdot (\omega_i \cdot \mathbf{n})\ d\omega_i$$
+              
+            Where :
+            <ul>
+                <li>\(\omega_o\) is the direction of the light going away from the surface</li>
+                <li>\(\omega_i\) is the direction of the light going toward the surface</li>
+                <li>\(L_o(\omega_o)\) is the output radiance (going away from the surface)</li>
+                <li>\(L_e(\omega_o)\) is the emitted radiance by surface</li>
+                <li>\(\Omega\) is the hemisphere above the flat surface (at infinitesimal scale, every surface appears to be a plane)</li>
+                <li>\(f_r(\omega_i,\omega_o)\) is the BRDF, the function that given \(\omega_i\) and \(\omega_o\) outputs the ratio of light reflected</li>
+                <li>\(L_i(\omega_i)\) is the incoming radiance (going toward the surface)</li>
+                <li>\(\mathbf{n}\) is the normal vector of the surface</li>
+
+            </ul>
+
+            Assuming that the surface do not emit any light and that its material is perfectly diffuse, the expression simplifies to :
+            $$L_o(\omega_o)= \int_{\Omega}^{} C \cdot L_i(\omega_i) \cdot cos(\theta_i)\ d\omega_i$$
+
+            Where :
+            <ul>
+                <li>\(C\) is the BRDF, which is a constant (it does not depend on \(\omega_i\) nor \(\omega_o\) ) for a purely diffuse material.</li>
+                <li>\(\theta_i\) is the angle between \(\omega_i\) and \(\mathbf{n}\)</li>
+            </ul>
+        </p>
+
+        <h4>Monte-Carlo integration</h4>
+        <p>
+            Evaluating the above integral can only be done analytically for the most simple scenes, which is not the case for our software.
+            \(L_i\) depends on the surrounding geometry, and the integral needs to be evaluated each time the light ray bounces.
+            <br>
+            Such integration can be done using Monte-Carlo integration. 
+            In our case the integral can be evaluated by drawing random directions in the hemisphere \(\omega_1, \omega_2, ..., \omega_n\) and computing
+            $$L_o(\omega_o) \approx \frac{C}{n}\sum_{j=1}^{n} L_i(\omega_j) \cdot cos(\theta_j) $$
+            Where \(\theta_j\) is the angle between \(\omega_j\) and the surface normal.
+            <br>
+            In the scenario where light does not bounce, \(L_i(\omega_j)\) is a binary function returning 0 if the ray hits part of the geometry and 1 if it escapes toward the sky.
+        </p>
+
+        <hr>
+        <h3>Reducing noise</h3>
+        <p>
+            The Monte-Carlo sampling presented above gives encouraging results, but still requires a tremendous amount of rays (and so computation time) to produce high quality results.
+            If not enough rays are traced, the variance of the Monte-Carlo estimator will produce noise in the output image.
+            Fortunately, there are techniques to reduce the noise without increases the number of rays.
+        </p>
+        <h4>Cosine-weighted hemisphere sampling</h4>
+        <p>
+            Evaluating \(L_o(\omega_o)\) as presented above requires to compute \(cos(\theta_j)\) for each random direction.
+            Beside consuming more ressources, this is not the optimal way of evaluating the Monte-Carlo integrator.
+            By sampling cosine-weighted random directions, we solve both these issues. 
+            The resulting Monte-Carlo integrator has a smaller variance, hence leading to less noise for the same number of rays.
+            To randomly sample cosine-weighted directions in the hemisphere, we can use the following formulas :
+            
+            $$\theta = cos^{-1}(\sqrt{\varepsilon_0})$$
+            $$\phi = 2\pi\varepsilon_1$$
+
+            Where
+            <ul>
+                <li>\(\theta\) is the spherical polar angle</li>
+                <li>\(\phi\) is the spherical azimuthal angle</li>
+                <li>\(\varepsilon_0\) and \(\varepsilon_1\) are two random variables uniformly distributed in \([0,1]\)</li>
+            </ul>
+            
+            Many websites demonstrate their derivation, like <a href="https://ameye.dev/notes/sampling-the-hemisphere/">this one</a>
+        </p>
+
+        <h4>Stratification</h4>
+        <p>
+            
+        </p>
+
+    </body>
+</html>
