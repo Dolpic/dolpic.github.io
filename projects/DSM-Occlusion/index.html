@@ -1,9 +1,17 @@
+<!---
+ TODO :
+ - Rename pipeline "steps" into "stages"   
+-->
+
 <!DOCTYPE html>
 <html>
     <head>
         <link rel="stylesheet" type="text/css" href="../../style.css">
         <title>Occlusion for raster models</title>
         <style>
+            body{
+                margin-top:50px;
+            }
             p{
                 text-align: justify;
             }
@@ -17,12 +25,14 @@
                 padding: 5px;
             }
             h2{
-                margin: 20px 0px 10px 0px;
                 text-align: center;
+                font-size: 25pt;
+                margin-top: 40px;
             }
-            h3{
+            h3, summary{
                 font-size: 20pt;
                 margin: 40px 0px 10px 0px;
+                font-weight: bold;
             }
             h4{
                 margin: 20px 0px 5px 0px;
@@ -40,86 +50,92 @@
     <body>
         <h1>DSM Occlusion</h1>
         <p class="subtitle">Occlusion for raster models</p>
-        <hr>
 
-        <h2>Software, code & installation</h2>
-        <p>Compiled binaries, source code and setup instruction are on the <a href="https://github.com/Dolpic/DSM-Occlusion">project’s github page.</a></p>
+        <h3>Software, code & installation</h3>
+        <p>Compiled binaries, source code and setup instruction are on the <a href="https://github.com/Dolpic/DSM-Occlusion">project’s GitHub page.</a></p>
         <p>The remaining of this document is dedicated to implementation details.</p>
         
         <hr>
         <h2>Implementation details and theoretical aspects</h2>
+        <hr>
 
+        <details>
+            <summary>File input & output</summary>
+            <p>
+                The communication with the file system is handled by the <a href="https://gdal.org/">GDAL library</a> which provides convenient abstractions to read raster in TIFF / GeoTIFF / COG.
+                <br>
+                During startup, the programs copies the input file into the output file, so that all the output disk space is allocated. 
+                The output format is also copied from the input file and handled by the <a href="https://gdal.org/">GDAL library</a>.
+                <br>
+                File IO operations could be further optimized, but are not a bottleneck. 
+                They are mainly linked to the disk read / write speed and the <a href="https://gdal.org/">GDAL</a> implementation.
+                Optimizing them further would not lead to a significant gain because of pipelining.
+                For very large files however, the first copy operation and the computation of statistics (performed at the very end) may take considerable time. 
+            </p>
+        </details>
+      
 
-        <h3>File input & output</h3>
-        <p>
-            All the IO is handled by the <a href="https://gdal.org/">GDAL library</a> which provides convenient abstractions to read raster in TIFF / GeoTIFF / COG so that this project’s code doesn’t have to implement these functions itself.
-            <br>
-            During startup, the programs copies the input file into the output file, so that all the output disk space is allocated. The output format is also copied from the input file and handled by the <a href="https://gdal.org/">GDAL library</a>.
-            <br>
-            File IO operations could be further optimized. They are mainly linked to the disk read / write speed and the <a href="https://gdal.org/">GDAL</a> implementation.
-        </p>
+        <details>
+            <summary>Application pipeline</summary>
+            <h4>General overview</h4>
+            <p>
+                The application splits the input file into tiles, so that the application can handle larger files than would fit in the machine memory.
+                <br>
+                Processing one tile can be split into 4 steps :
+                <ol>
+                    <li><b>Tile loading</b> : The time for a tile to be read from the file on disk into memory</li>
+                    <li><b>Tile initialization</b> : Before performing ray-tracing on the data, an initialization step is performed on the CPU to create an acceleration structure significantly decreasing the tracing time.</li>
+                    <li><b>Tile tracing</b> : The tile is transferred to the GPU where ray-tracing is performed. The result is then transferred back to the CPU.</li>
+                    <li><b>Tile writing</b> : Finally, the result is written on the disk</li>
+                </ol>
+                <i>
+                    The steps above are arbitrary, one may choose to split the computation time differently. 
+                    For example, two steps can be added before and after the tracing, to take into account the time for the data to be transferred from the CPU to the GPU and from the GPU back to CPU respectively.
+                    From experience however, data transfer time between CPU and GPU are mostly small compared to tracing time.
+                </i>
+            </p>
 
+            <h4>Speedup using pipelining</h4>
+            <img style="float:right"  src="ressources/images/piepline.svg">
+            <p>
+                As tiles are independent of each other (beside border effects discussed below), their computation can be pipelined (inspired from processors <a href="https://en.wikipedia.org/wiki/Instruction_pipelining">instruction pipelining</a>) so that each step defined above does not wait for the whole tile to be finished before processing the next tile.
+                This is illustrated by the figure on the right.
+                <br><br>
+                In the code, the class <i>Pipeline</i> creates one thread per step.
+                The main thread ensures synchronization between steps so that each operation starts when the previous is fully completed.
+                When a step finishes its work, it notifies the main thread and waits. 
+                Upon all steps completion, the main thread moves the data produced by each thread to the input of the next thread and wakes up all the thread.
+                <br><br>
+                As shown on the figure, the slower step is the bottleneck and dictates when all the steps will switch to the next tile.
+                It is therefore crucial to equally spear the workload between threads. 
+                The duration of each thread step may vary based on the user parameters (tile size, number of rays, etc.) and also on the hardware used.
+                Last generation GPUs significantly decrease the ray-tracing time.
+                <br><br>
+                During out tests, implementing pipeline improved the whole computation time by about 30%.
+                Pipelining could be further improved by splitting the processing time into more steps. 
+                However, the bottlenecks are currently the initialization and tracing steps, which, besides data transfer, would be challenging to split.
+            </p>
 
-        <h3>Application pipeline</h3>
-        <h4>General overview</h4>
-        <p>
-            The application splits the input file into tiles, so that the application can handle larger file than would fit in the machine memory. 
-            Furthermore, for the same number of pixels, processing many smaller tiles is faster than one large.
-            The gain varies depending on the graphic card used, hence the ability for the users to select their preferred size as a parameter.
-            <br>
-            The processing of one tile can be splitted into 4 steps :
-            <ol>
-                <li><b>Tile loading</b> : The time for a tile to be read from the file on disk into memory</li>
-                <li><b>Tile initialization</b> : Before performing ray-tracing on the data, an initialization step is performed on the CPU to create an acceleration structure significantly decreasing the tracing time.</li>
-                <li><b>Tile tracing</b> : The tile is transferred to the GPU where ray-tracing is performed. The result is then transferred back to the CPU.</li>
-                <li><b>Tile writing</b> : Finally, the results written in the output file in the disk</li>
-            </ol>
-            <i>
-                Note : The steps above are arbitrary, one may chose to split the computation time differently. 
-                For exemple, two steps can be added before and after the tracing, to take into account the time for the data to be transferred from the CPU to the GPU and from the GPU back to CPU respectively.
-                From experience however, data transfer time between CPU and GPU are mostly small compared to tracing time.
-            </i>
-        </p>
+            <h4>Handling tile’s border effects</h4>
+            <p>
+                The previous section states that tiles are independent of each other. 
+                This is not entirely true : near a tile border, geometry located in another tile may influence the shadow.
+                By tiling the data, this would lead to geometry being ignored and seeable artifacts in the final result.
+                To avoid this issue, the algorithm takes a tile buffer parameter, which serves as overlap between tiles. 
+                All tiles are loaded and processed with this overlap, and it is finally ignored when saving the tile.
+                <br><br>
+                Empirical tests shown that having a buffer of about 1/3 of the tile size prevents artifacts for pixels of 50 cm.
+                This parameter is strongly linked to the pixel size, as smaller pixels requires larger overlap.
+                <br><br>
+                There is a tradeoff when choosing the tile size. 
+                On one hand, larger tiles take more time to compute, increasing more than linearly.
+                On the other hand, the smaller the tile, the bigger the proportion of buffer and so the time spend computing overlaps later discarded.
+                As the optimum depends on the hardware, it can be reached by the user using the <i>tile size</i> and <i>tile buffer</i> parameters.
+            </p>
+        </details>
 
-
-        <h4>Speedup using pipelining</h4>
-        <img style="float:right"  src="ressources/images/piepline.svg">
-        <p>
-            As tiles are independent from each other (beside border effects discussed below), their computation can be pipelined so that each step defined above does not wait for the whole tile to be finished before processing the next tile.
-            This is illustrated by the figure on the right.
-            Implementing pipelining increases the code complexity because a mechanism must ensure that a step finishes before the next one can begin.
-            <br><br>
-            In the code, the class <i>Pipeline</i> creates one thread per step, and ensures synchronization between threads so that each operation starts when the previous is completed.<br>
-            As shown on the figure, the slower step dictates when each step may process the next tile. 
-            When a step finishes its work, it notifies the main thread and waits. Upon all steps completion, the main thread moves the data between child threads and wakes them up.
-            <br><br>
-            Implementing pipeline improved the whole computation time by around 30%. 
-            This is expected to heavily changes from one machine to another, as the bottleneck step dictates the progression pace.
-            <br>
-            Pipelining could be further improved by splitting the processing time into more steps. 
-            However, the bottlenecks are currently the initialization and tracing steps, which, besides data transfer, can not be further splitted.
-        </p>
-
-
-        <h4>Handling tile’s border effects</h4>
-        <p>
-            The previous section states that tiles are independent from each other. 
-            This is not entirely true : near a tile border, geometry located in another tile may influence the shadow.
-            By tiling the data, this would lead to geometry being ignore and seeable artefacts in the final result.
-            To avoid this issue, the algorithm takes a tile buffer parameter, which is an overlap between tiles. 
-            All tiles are loaded and processed with this overlap, it is finally ignored when saving the tile.
-            <br><br>
-            Empirical tests shown that having a buffer of 1/3 of the tile size prevents artefacts for pixels of 50cm.
-            This parameter is strongly linked to the pixel size, as smaller pixels requires larger overlap due to ???.
-            <br>
-            There is a tradeoff when choosing the tile size. 
-            On one hand larger tiles take more time to compute, increasing faster than quadratically.
-            On the other hand, the smaller the tile, the larger the required overlap so that tile’s border are not visible.
-            The sweet spot depends on the GPU used and can be chosen by the user using the <i>tile size</i> and <i>tile buffer</i> parameters.
-        </p>
-
-
-        <h3>Initialization : constructing a bounding volume hierarchy (BVH)</h3>
+        <details>
+        <summary>Initialization : constructing a bounding volume hierarchy (BVH)</summary>
         <img style="float:right"  src="ressources/images/BVH.svg">
         <p>
             Starting the path tracing algorithm on raw points would lead to inacceptable execution time, as the process would need to check for every point if any other point occludes it.
@@ -144,16 +160,19 @@
             </ul>
 
             As all the points are approximated by boxes, there is no need to implement advanced BVH heuristics such as splitting the nodes based on the primitives' surface area.
+            Furthermore, as all values in the raster model only gives information about the highest value at the pixel (we have no information if there's a gap under a given pixel), all the bounding boxes have their bottom plane at 0.
+            This simplifies some computations.
         </p>
+        </details>
 
-        <hr>
-        <h3>GPU Path tracing</h3>
+        <details>
+        <summary>Path tracing</summary>
         <p>
             Once the BVH for a given tile is build, this tile can be processed by the GPU to produce its occlusion.
             For each pixel in the input tile, the GPU launches the user-defined number of rays in randomized directions.
         </p>
         
-        <h4>Path tracing</h4>
+        <h4>The rendering equation</h4>
         <p>
             To produce the result, the application uses path tracing, a ray-tracing algorithm based on the rendering equation.
             At any given position and time, for every wavelength we have :
@@ -194,14 +213,16 @@
             <br>
             In the scenario where light does not bounce, \(L_i(\omega_j)\) is a binary function returning 0 if the ray hits part of the geometry and 1 if it escapes toward the sky.
         </p>
+        </details>
 
-        <hr>
-        <h3>Reducing noise</h3>
+        <details>
+        <summary>Reducing noise</summary>
         <p>
             The Monte-Carlo sampling presented above gives encouraging results, but still requires a tremendous amount of rays (and so computation time) to produce high quality results.
             If not enough rays are traced, the variance of the Monte-Carlo estimator will produce noise in the output image.
             Fortunately, there are techniques to reduce the noise without increases the number of rays.
         </p>
+
         <h4>Cosine-weighted hemisphere sampling</h4>
         <p>
             Evaluating \(L_o(\omega_o)\) as presented above requires to compute \(cos(\theta_j)\) for each random direction.
@@ -225,8 +246,24 @@
 
         <h4>Stratification</h4>
         <p>
-            
+            Sampling random directions in the hemisphere may lead to some region being oversampled while other are undersampled.
+            This effect increases noise.
+            To reduce the noise, a strategy called stratification divided the sample region (the hemisphere in our case) into subareas that will each receive the same number of random-oriented rays.
+            The code divides the hemisphere into 16 regions, each of them are divided into subregions along their polar angle, so that each ray falls into one subregion.
         </p>
+        </details>
+
+        <details>
+        <summary>GPU acceleration</summary>
+
+        <h4>Ray - Box intersection</h4>
+        <p>
+            The only type of intersection present in the software is the ray - box intersection where the ray is described by a point and a direction, and the box is described by its minimal X,Y,Z and maximal X,Y,Z.
+            Thus, as bounding boxes all have their bottom face at height 0, the intersection algorithm simplifies further.
+
+            <b>TODO : Add intersection algorithm</b>
+        </p>
+        </details>
 
     </body>
 </html>
