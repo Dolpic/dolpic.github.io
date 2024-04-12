@@ -1,8 +1,3 @@
-<!---
- TODO :
- - Rename pipeline "steps" into "stages"   
--->
-
 <!DOCTYPE html>
 <html>
     <head>
@@ -81,7 +76,7 @@
             <p>
                 The application splits the input file into tiles, so that the application can handle larger files than would fit in the machine memory.
                 <br>
-                Processing one tile can be split into 4 steps :
+                Processing one tile can be split into 4 stages :
                 <ol>
                     <li><b>Tile loading</b> : The time for a tile to be read from the file on disk into memory</li>
                     <li><b>Tile initialization</b> : Before performing ray-tracing on the data, an initialization step is performed on the CPU to create an acceleration structure significantly decreasing the tracing time.</li>
@@ -89,8 +84,8 @@
                     <li><b>Tile writing</b> : Finally, the result is written on the disk</li>
                 </ol>
                 <i>
-                    The steps above are arbitrary, one may choose to split the computation time differently. 
-                    For example, two steps can be added before and after the tracing, to take into account the time for the data to be transferred from the CPU to the GPU and from the GPU back to CPU respectively.
+                    The stages above are arbitrary, one may choose to split the computation time differently. 
+                    For example, two stages can be added before and after the tracing, to take into account the time for the data to be transferred from the CPU to the GPU and from the GPU back to CPU respectively.
                     From experience however, data transfer time between CPU and GPU are mostly small compared to tracing time.
                 </i>
             </p>
@@ -98,22 +93,22 @@
             <h4>Speedup using pipelining</h4>
             <img style="float:right"  src="ressources/images/piepline.svg">
             <p>
-                As tiles are independent of each other (beside border effects discussed below), their computation can be pipelined (inspired from processors <a href="https://en.wikipedia.org/wiki/Instruction_pipelining">instruction pipelining</a>) so that each step defined above does not wait for the whole tile to be finished before processing the next tile.
+                As tiles are independent of each other (beside border effects discussed below), their computation can be pipelined (inspired from processors <a href="https://en.wikipedia.org/wiki/Instruction_pipelining">instruction pipelining</a>) so that each stage defined above does not wait for the whole tile to be finished before processing the next tile.
                 This is illustrated by the figure on the right.
                 <br><br>
-                In the code, the class <i>Pipeline</i> creates one thread per step.
-                The main thread ensures synchronization between steps so that each operation starts when the previous is fully completed.
-                When a step finishes its work, it notifies the main thread and waits. 
-                Upon all steps completion, the main thread moves the data produced by each thread to the input of the next thread and wakes up all the thread.
+                In the code, the class <i>Pipeline</i> creates one thread per stage.
+                The main thread ensures synchronization between stages so that each operation starts when the previous is fully completed.
+                When a stage finishes its work, it notifies the main thread and waits. 
+                Upon all stages completion, the main thread moves the data produced by each thread to the input of the next thread and wakes up all the thread.
                 <br><br>
-                As shown on the figure, the slower step is the bottleneck and dictates when all the steps will switch to the next tile.
+                As shown on the figure, the slower stage is the bottleneck and dictates when all the stages will switch to the next tile.
                 It is therefore crucial to equally spear the workload between threads. 
-                The duration of each thread step may vary based on the user parameters (tile size, number of rays, etc.) and also on the hardware used.
+                The duration of each thread stage may vary based on the user parameters (tile size, number of rays, etc.) and also on the hardware used.
                 Last generation GPUs significantly decrease the ray-tracing time.
                 <br><br>
                 During out tests, implementing pipeline improved the whole computation time by about 30%.
-                Pipelining could be further improved by splitting the processing time into more steps. 
-                However, the bottlenecks are currently the initialization and tracing steps, which, besides data transfer, would be challenging to split.
+                Pipelining could be further improved by splitting the processing time into more stages. 
+                However, the bottlenecks are currently the initialization and tracing stages, which, besides data transfer, would be challenging to split.
             </p>
 
             <h4>Handling tile’s border effects</h4>
@@ -138,22 +133,25 @@
         <summary>Initialization : constructing a bounding volume hierarchy (BVH)</summary>
         <img style="float:right"  src="ressources/images/BVH.svg">
         <p>
-            Starting the path tracing algorithm on raw points would lead to inacceptable execution time, as the process would need to check for every point if any other point occludes it.
-            Fortunately, this execution time can be significantly reduced using a bounding volume hierarchy.
-            A BVH is a binary tree with leaves describing primitives (part of some geometry) and other nodes describing bounding boxes englobing their children.
+            Starting the path tracing algorithm on raw points would lead to unacceptable execution time, as the process would need to check for every point if any other point occludes it.
+            Fortunately, this execution time can be significantly reduced using a bounding volume hierarchy (BVH).
+            A BVH is a binary tree with leaves describing primitives (part of some geometry) and other nodes describing bounding boxes containing their children.
             With such a structure, computing the intersection between a ray and all the geometry boils down to a binary tree search. 
             <br>
-            During the initialization process, the initial tile's data is converted to a BVH by the CPU. The BVH creation leverages the following simplifications compared to traditional BVHs :
+            During the initialization process, the initial tile's data is converted to a BVH by the CPU. 
+            Our BVH creation leverages the following simplifications compared to traditional BVHs :
             <ul>
                 <li>
                     <b>Only bounded boxes are stored</b> as the data points can be approximated by boxes. 
-                    Leaves are bounding boxes around one single data point (one pixel in the original data) and upon intersection with a leaf, the ray is considered to hit the point.
+                    Leaves are bounding boxes around one single data point (one pixel in the raster data) and upon intersection with a BVH leaf, the ray is considered to hit the point.
                     Note that in any case an approximation needs to be made : for random rays to hit points in 3D space, these points needs to be made solid. 
-                    Approximating points by boxes allow all intersections to be between rays ans boxes, which both simplifies the code and is the fastest intersection to compute.
+                    Approximating points by boxes simplifies all the intersections.
+                    Our programs only have one type of intersection to handle : between rays and boxes.
+                    Conveniently, it is one of the fastest intersection to compute.
                 </li>
                 <li>
                     <b>Nodes store the bounding box of their two children instead of their own. </b>
-                    During GPU execution, the bottleneck is the memory accesses to the main memory holding the BVH.
+                    During GPU execution, the bottleneck is the memory accesses to the main GPU memory holding the BVH.
                     To speed up computation, memory accesses are reduced as much as possible.
                     Storing both children bounding boxes at each node prevents loading a whole child node from memory if there is no collision with it.
                 </li>
@@ -161,7 +159,7 @@
 
             As all the points are approximated by boxes, there is no need to implement advanced BVH heuristics such as splitting the nodes based on the primitives' surface area.
             Furthermore, as all values in the raster model only gives information about the highest value at the pixel (we have no information if there's a gap under a given pixel), all the bounding boxes have their bottom plane at 0.
-            This simplifies some computations.
+            This further simplifies some computations.
         </p>
         </details>
 
@@ -199,6 +197,13 @@
                 <li>\(C\) is the BRDF, which is a constant (it does not depend on \(\omega_i\) nor \(\omega_o\) ) for a purely diffuse material.</li>
                 <li>\(\theta_i\) is the angle between \(\omega_i\) and \(\mathbf{n}\)</li>
             </ul>
+
+            <br><br>
+            It is practical to express the BRDF in terms of \(R\), the reflectance, which is value between 0 and 1 giving the amount of light reflected by a surface.
+            A reflectance of 0 would be a surface absorbing all the light it receives, whereas a reflectance of 1 would be a surface reflecting all the light it receives.
+            <br>
+            We have \( \int_{\Omega}^{} C \cdot cos(\theta_i)\ d\omega_i = R \) which implies by solving the equation that \( C = R/\pi\)
+
         </p>
 
         <h4>Monte-Carlo integration</h4>
