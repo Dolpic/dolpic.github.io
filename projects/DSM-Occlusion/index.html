@@ -39,8 +39,16 @@
                 margin-bottom: 20px;
             }
         </style>
-        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script> <!-- Browser compatibility-->
+        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+            MathJax.Hub.Config({jax: ["output/SVG"]})
+        </script>
+
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tokyo-night-dark.min.css">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+        <script>hljs.highlightAll();</script>
+
     </head>
     <body>
         <h1>DSM Occlusion</h1>
@@ -62,10 +70,10 @@
                 During startup, the programs copies the input file into the output file, so that all the output disk space is allocated. 
                 The output format is also copied from the input file and handled by the <a href="https://gdal.org/">GDAL library</a>.
                 <br>
-                File IO operations could be further optimized, but are not a bottleneck. 
+                File IO operations are generally not a bottleneck. 
                 They are mainly linked to the disk read / write speed and the <a href="https://gdal.org/">GDAL</a> implementation.
                 Optimizing them further would not lead to a significant gain because of pipelining.
-                For very large files however, the first copy operation and the computation of statistics (performed at the very end) may take considerable time. 
+                For very large files however, the first copy operation may take considerable time, based on the IO operation speed.
             </p>
         </details>
       
@@ -74,9 +82,9 @@
             <summary>Application pipeline</summary>
             <h4>General overview</h4>
             <p>
-                The application splits the input file into tiles, so that the application can handle larger files than would fit in the machine memory.
+                The application splits the input file into tiles, so that the application can handle larger files than would not fit in the machine memory.
                 <br>
-                Processing one tile can be split into 4 stages :
+                Processing one tile is split into 4 pipeline stages :
                 <ol>
                     <li><b>Tile loading</b> : The time for a tile to be read from the file on disk into memory</li>
                     <li><b>Tile initialization</b> : Before performing ray-tracing on the data, an initialization step is performed on the CPU to create an acceleration structure significantly decreasing the tracing time.</li>
@@ -91,15 +99,15 @@
             </p>
 
             <h4>Speedup using pipelining</h4>
-            <img style="float:right"  src="ressources/images/piepline.svg">
+            <img style="float:right"  src="ressources/images/pipeline.svg">
             <p>
                 As tiles are independent of each other (beside border effects discussed below), their computation can be pipelined (inspired from processors <a href="https://en.wikipedia.org/wiki/Instruction_pipelining">instruction pipelining</a>) so that each stage defined above does not wait for the whole tile to be finished before processing the next tile.
                 This is illustrated by the figure on the right.
                 <br><br>
                 In the code, the class <i>Pipeline</i> creates one thread per stage.
-                The main thread ensures synchronization between stages so that each operation starts when the previous is fully completed.
-                When a stage finishes its work, it notifies the main thread and waits. 
-                Upon all stages completion, the main thread moves the data produced by each thread to the input of the next thread and wakes up all the thread.
+                The main thread ensures synchronization between stages so that each step starts when all the stages in the previous step are fully completed.
+                When a thread finishes its work, it notifies the main thread and waits. 
+                When all the threads are waiting, the main thread moves the data produced by each stage to the input of the next stage and wakes up all the threads.
                 <br><br>
                 As shown on the figure, the slower stage is the bottleneck and dictates when all the stages will switch to the next tile.
                 It is therefore crucial to equally spear the workload between threads. 
@@ -115,17 +123,17 @@
             <p>
                 The previous section states that tiles are independent of each other. 
                 This is not entirely true : near a tile border, geometry located in another tile may influence the shadow.
-                By tiling the data, this would lead to geometry being ignored and seeable artifacts in the final result.
+                <br>
+                By naively tiling the data, this would lead to geometry being ignored and seeable artifacts in the final result.
                 To avoid this issue, the algorithm takes a tile buffer parameter, which serves as overlap between tiles. 
-                All tiles are loaded and processed with this overlap, and it is finally ignored when saving the tile.
-                <br><br>
-                Empirical tests shown that having a buffer of about 1/3 of the tile size prevents artifacts for pixels of 50 cm.
+                All tiles are loaded and processed with this overlap, and it is finally discarded when saving the tile.
+                Empirical tests shown that having a buffer of about 1/3 of the tile size prevents almost all artifacts when pixels are 50 cm.
                 This parameter is strongly linked to the pixel size, as smaller pixels requires larger overlap.
                 <br><br>
                 There is a tradeoff when choosing the tile size. 
                 On one hand, larger tiles take more time to compute, increasing more than linearly.
-                On the other hand, the smaller the tile, the bigger the proportion of buffer and so the time spend computing overlaps later discarded.
-                As the optimum depends on the hardware, it can be reached by the user using the <i>tile size</i> and <i>tile buffer</i> parameters.
+                On the other hand, the smaller the tile, the bigger the proportion of buffer pixels, and so the time spend computing overlaps later discarded.
+                As the optimum depends on the hardware, tile's borders are customizable using the <i>tile size</i> and <i>tile buffer</i> parameters.
             </p>
         </details>
 
@@ -134,7 +142,8 @@
         <img style="float:right"  src="ressources/images/BVH.svg">
         <p>
             Starting the path tracing algorithm on raw points would lead to unacceptable execution time, as the process would need to check for every point if any other point occludes it.
-            Fortunately, this execution time can be significantly reduced using a bounding volume hierarchy (BVH).
+            <br>
+            Fortunately, this execution time can be significantly reduced using a <a href="https://en.wikipedia.org/wiki/Bounding_volume_hierarchy">bounding volume hierarchy (BVH)</a>.
             A BVH is a binary tree with leaves describing primitives (part of some geometry) and other nodes describing bounding boxes containing their children.
             With such a structure, computing the intersection between a ray and all the geometry boils down to a binary tree search. 
             <br>
@@ -144,7 +153,8 @@
                 <li>
                     <b>Only bounded boxes are stored</b> as the data points can be approximated by boxes. 
                     Leaves are bounding boxes around one single data point (one pixel in the raster data) and upon intersection with a BVH leaf, the ray is considered to hit the point.
-                    Note that in any case an approximation needs to be made : for random rays to hit points in 3D space, these points needs to be made solid. 
+                    <br>
+                    In any case an approximation needs to be made : for random rays to hit points in 3D space, these points needs to be made solid. 
                     Approximating points by boxes simplifies all the intersections.
                     Our programs only have one type of intersection to handle : between rays and boxes.
                     Conveniently, it is one of the fastest intersection to compute.
@@ -153,16 +163,63 @@
                     <b>Nodes store the bounding box of their two children instead of their own. </b>
                     During GPU execution, the bottleneck is the memory accesses to the main GPU memory holding the BVH.
                     To speed up computation, memory accesses are reduced as much as possible.
-                    Storing both children bounding boxes at each node prevents loading a whole child node from memory if there is no collision with it.
+                    Storing both children bounding boxes at each node prevents fetching a child node from memory if there is no collision with it.
                 </li>
             </ul>
 
             As all the points are approximated by boxes, there is no need to implement advanced BVH heuristics such as splitting the nodes based on the primitives' surface area.
             Furthermore, as all values in the raster model only gives information about the highest value at the pixel (we have no information if there's a gap under a given pixel), all the bounding boxes have their bottom plane at 0.
-            This further simplifies some computations.
+            This further slightly simplifies the intersection algorithm.
+            <br>
+            The intersection code is described in the "GPU acceleration" section:
+            <br>
+            <i>
+                <b>invRayDir</b> is one over the direction vector (1/dir.x, 1/dir.y, 1/dir.z). This saves doing the division multiple times in this function.
+                <br>
+                <b>rayOrigin</b> is the origin of the ray (3D vector)
+                <b>(minX; minY; minZ) and (maxX; maxY; maxZ)</b> are the coordinates of two corners of the box.
+            </i>
+            <pre><code>
+                bool intersects(const Vec3<float>& invRayDir, const Point3<float>& rayOrigin) {
+                    float min, max;
+            
+                    const float tX1 = (minX - rayOrigin.x) * invRayDir.x;
+                    const float tX2  = (maxX - rayOrigin.x) * invRayDir.x;
+            
+                    min = fminf(tX1, tX2);
+                    max = fmaxf(tX1, tX2);
+                    
+                    const float tY1 = (minY - rayOrigin.y) * invRayDir.y;
+                    const float tY2  = (maxY - rayOrigin.y) * invRayDir.y;
+            
+                    const float tNearY = fminf(tY1, tY2);
+                    const float tFarY  = fmaxf(tY1, tY2);
+            
+                    min = fmaxf(tNearY, min);
+                    max = fminf(tFarY, max);
+            
+                    const float tZ1 = (/*minZ*/ - rayOrigin.z) * invRayDir.z;
+                    const float tZ2  = (maxZ - rayOrigin.z) * invRayDir.z;
+            
+                    const float tNearZ = fminf(tZ1, tZ2);
+                    const float tFarZ  = fmaxf(tZ1, tZ2);
+            
+                    min = fmaxf(tNearZ, min);
+                    max = fminf(tFarZ, max);
+            
+                    return min < max && max > 0;
+                }
+            </code></pre>
+            This algorithm computes t1 and t2 along each axes (tX1, tX2, tY1, tY2, tZ1, tZ2) which corresponds to the distance along the ray direction from the ray origin to each of the 6 faces of the considered box. 
+            There is an intersection between the ray and the box if 
+                \(max(min(tX1, tX2), min(tY1, tY2), (tZ1, tZ2)) < min(max(tX1, tX2), max(tY1, tY2), max(tZ1, tZ2))\).
+            Many implementations found in the literature return early, if, for example, min(tX1, tX2) > max(tY1, tY2). We observed higher performance on the GPU when not returning early, as GPU better leverage parallelization when avoiding branching.
+            <br>
+            As stated earlier, making the assumption that all the boxes have their bottom planes at 0 spares the subtraction with minZ, as \(minZ = 0\).
         </p>
         </details>
 
+        <!-- Note : I'm not clear about w_i, I define it as the direction going IN the surface, and them assume it is a direction going AWAY from the surface...-->
         <details>
         <summary>Path tracing</summary>
         <p>
@@ -170,7 +227,7 @@
             For each pixel in the input tile, the GPU launches the user-defined number of rays in randomized directions.
         </p>
         
-        <h4>The rendering equation</h4>
+        <h4>The rendering equation - Theoretical derivation of the occlusion</h4>
         <p>
             To produce the result, the application uses path tracing, a ray-tracing algorithm based on the rendering equation.
             At any given position and time, for every wavelength we have :
@@ -189,7 +246,7 @@
 
             </ul>
 
-            Assuming that the surface do not emit any light and that its material is perfectly diffuse, the expression simplifies to :
+            Assuming that the surface do not emit any light, that its material is perfectly diffuse, and that \(\omega_i\) and \(\mathbf{n}\) are unit vectors, the expression simplifies to :
             $$L_o(\omega_o)= \int_{\Omega}^{} C \cdot L_i(\omega_i) \cdot cos(\theta_i)\ d\omega_i$$
 
             Where :
@@ -202,21 +259,25 @@
             It is practical to express the BRDF in terms of \(R\), the reflectance, which is value between 0 and 1 giving the amount of light reflected by a surface.
             A reflectance of 0 would be a surface absorbing all the light it receives, whereas a reflectance of 1 would be a surface reflecting all the light it receives.
             <br>
-            We have \( \int_{\Omega}^{} C \cdot cos(\theta_i)\ d\omega_i = R \) which implies by solving the equation that \( C = R/\pi\)
+            Using the fact that 
+                $$ \int_{\Omega}^{} f(\theta) \, d\omega \, = \int_{0}^{ 2\pi\ } \int_{0}^{ \frac{ \pi\ }{2} } f(\theta, \phi) \cdot sin(\theta) \, d\theta \, d\phi $$
+            we have that \( \int_{\Omega}^{} C \cdot cos(\theta_i)\ d\omega_i = R \) implies that \( C = R/\pi\).
+            <br>
+            So the final equation for the occlusion is :
+            $$ L_o(\omega_o)= \frac{R}{ \pi\ } \int_{\Omega}^{} L_i(\omega_i) \cdot cos(\theta_i)\ d\omega_i $$
+
+            Furthermore, if we assume that rays do not bounce, \(L_i(\omega_i)\) is the binary visibility function, of value 1 if the sky is visible in the direction \(\omega_i\) and 0 otherwise (if there is something occluding the sky).
 
         </p>
 
-        <h4>Monte-Carlo integration</h4>
+        <h4>Monte-Carlo integration - Estimating the occlusion</h4>
         <p>
-            Evaluating the above integral can only be done analytically for the most simple scenes, which is not the case for our software.
-            \(L_i\) depends on the surrounding geometry, and the integral needs to be evaluated each time the light ray bounces.
+            Evaluating the above integral can only be done analytically for the simplest scenes, this is not doable in the general case.
+            \(L_i\) depends on the surrounding geometry, and the integral needs to be evaluated recursively each time the light ray bounces.
             <br>
-            Such integration can be done using Monte-Carlo integration. 
-            In our case the integral can be evaluated by drawing random directions in the hemisphere \(\omega_1, \omega_2, ..., \omega_n\) and computing
-            $$L_o(\omega_o) \approx \frac{C}{n}\sum_{j=1}^{n} L_i(\omega_j) \cdot cos(\theta_j) $$
-            Where \(\theta_j\) is the angle between \(\omega_j\) and the surface normal.
-            <br>
-            In the scenario where light does not bounce, \(L_i(\omega_j)\) is a binary function returning 0 if the ray hits part of the geometry and 1 if it escapes toward the sky.
+            Such integrals can be approximated using <a href="https://en.wikipedia.org/wiki/Monte_Carlo_integration">Monte-Carlo integration</a>. 
+            In our case the integral can be evaluated by drawing \(n\) random directions in the hemisphere \(\omega_1, \omega_2, ..., \omega_n\) and computing
+            $$L_o(\omega_o) \approx \frac{R}{n \cdot \pi\ }\sum_{j=1}^{n} L_i(\omega_j) \cdot cos(\theta_j) $$
         </p>
         </details>
 
@@ -231,30 +292,52 @@
         <h4>Cosine-weighted hemisphere sampling</h4>
         <p>
             Evaluating \(L_o(\omega_o)\) as presented above requires to compute \(cos(\theta_j)\) for each random direction.
-            Beside consuming more ressources, this is not the optimal way of evaluating the Monte-Carlo integrator.
+            Beside consuming more ressources, this is not the optimal way of sampling the integral.
             By sampling cosine-weighted random directions, we solve both these issues. 
             The resulting Monte-Carlo integrator has a smaller variance, hence leading to less noise for the same number of rays.
+            <br>
             To randomly sample cosine-weighted directions in the hemisphere, we can use the following formulas :
             
-            $$\theta = cos^{-1}(\sqrt{\varepsilon_0})$$
-            $$\phi = 2\pi\varepsilon_1$$
+            $$\theta = cos^{-1}(\sqrt{\varepsilon_0}), \quad \phi = 2 \cdot \pi \cdot \varepsilon_1 $$
 
             Where
             <ul>
                 <li>\(\theta\) is the spherical polar angle</li>
                 <li>\(\phi\) is the spherical azimuthal angle</li>
-                <li>\(\varepsilon_0\) and \(\varepsilon_1\) are two random variables uniformly distributed in \([0,1]\)</li>
+                <li>\(\varepsilon_0\) and \(\varepsilon_1\) are two independent random variables uniformly distributed in \([0,1]\)</li>
             </ul>
             
             Many websites demonstrate their derivation, like <a href="https://ameye.dev/notes/sampling-the-hemisphere/">this one</a>
+            <br>
+            With cosine-weighted sampling, the Monte-Carlo integration becomes :
+            $$L_o(\omega_o) \approx \frac{R}{n \cdot \pi\ }\sum_{j=1}^{n} L_i(\omega') $$
+            Where \(\omega'\) is cosine-weighted sampled at random using the formulas for \(\theta\) and \(\phi\) above.
+            Converting \(\theta\) and \(\phi\) to \(x y z\) coordinates is easily done using the traditional formulas :
+            $$ x = sin(\theta) \cdot cos(\phi), \quad y = sin(\theta) \cdot sin(\phi), \quad z = cos(\theta) $$
         </p>
 
         <h4>Stratification</h4>
         <p>
             Sampling random directions in the hemisphere may lead to some region being oversampled while other are undersampled.
-            This effect increases noise.
-            To reduce the noise, a strategy called stratification divided the sample region (the hemisphere in our case) into subareas that will each receive the same number of random-oriented rays.
+            This effect increases noise. <br>
+            To reduce the noise, a strategy called stratification divides the sample region (the hemisphere in our case) into subareas that will each receive the same number of random-oriented rays.
+            <br>
             The code divides the hemisphere into 16 regions, each of them are divided into subregions along their polar angle, so that each ray falls into one subregion.
+            A pseudocode to compute the estimator would look like :
+            <pre><code>
+                int number_segment_per_direction = 16; // Empirically derived from tests
+                int rays_per_pixel = 128; // Depends on user parameter, the more rays the less noise
+                int rays_per_direction = rays_per_pixel / number_segment_per_direction;
+                float sum = 0;
+                for(int i=0; i < rays_per_pixel; i++){
+                    float eta_0_stratified = ( (i%rays_per_direction) + eta_0 ) / rays_per_direction;
+                    float eta_1_stratified   = ( (i/rays_per_direction) + eta_1 ) / number_segment_per_direction;
+                    vector3 w_i = cosine_weighted_sampling(eta_0_stratified, eta_1_stratified);
+                    sum += L_i(w_i); // We assume the reflectance is taken into account in this function
+                }
+                return sum / (pi*rays_per_pixel);
+            </code></pre>
+            This code ensures that each ray is cast in a different subregion in a round-robin manner.
         </p>
         </details>
 
@@ -263,10 +346,7 @@
 
         <h4>Ray - Box intersection</h4>
         <p>
-            The only type of intersection present in the software is the ray - box intersection where the ray is described by a point and a direction, and the box is described by its minimal X,Y,Z and maximal X,Y,Z.
-            Thus, as bounding boxes all have their bottom face at height 0, the intersection algorithm simplifies further.
-
-            <b>TODO : Add intersection algorithm</b>
+            TODO
         </p>
         </details>
 
